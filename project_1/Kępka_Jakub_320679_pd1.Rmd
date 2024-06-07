@@ -1,0 +1,531 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r Wgrywanie plików .csv}
+load.files <- function(filepath){
+  data <- read.csv(filepath, sep = ",")
+  return(data)
+}
+
+dir_path = "C:\\Users\\Jakub Kępka\\Desktop\\Projekty\\Python&R\\projekt1"
+setwd(dir_path)
+
+Comments = load.files("./Comments.csv")
+PostLinks = load.files("./PostLinks.csv")
+Posts = load.files("./Posts.csv")
+Users = load.files("./Users.csv")
+
+CommentsDT = fread("./Comments.csv")
+PostLinksDT = fread("./PostLinks.csv")
+PostsDT = fread("./Posts.csv")
+UsersDT = fread("./Users.csv")
+
+#importowanie biblotek
+library(dplyr)
+#library(microbenchmark) Nie działa :(
+library(sqldf)
+library(data.table)
+library(compare)
+
+```
+
+```{r Globalne Funkcje}
+  compare_times <- function(dplyr_q, base_q, data.table_q, sqldf_q)
+{
+  timing <- system.time({sqldf_q()})
+  print("sqldf: ")
+  print(timing)
+  
+  timing <- system.time({base_q()})
+  print("bazowe funkcje:")
+  print(timing)
+  
+  timing <- system.time({dplyr_q()})
+  print("dplyr:")
+  print(timing)
+  
+  timing <- system.time({data.table_q()})
+  print("data.table:")
+  print(timing)
+}
+
+compare_df <- function(df1, df2, df1_name, df2_name)
+{
+    if (all(names(df1) == names(df2))) {
+
+    df1 = as.data.frame(df1)
+    df2 = as.data.frame(df2)
+    are_identical <- compare(df1, df2, allowAll = TRUE)[1]
+    
+    if (are_identical==TRUE) {
+        print(sprintf("Ramki danych są tożsame co do permutacji wierszy. %s == %s", df1_name, df2_name))
+        return(TRUE)
+      } else {
+        print(sprintf("Ramki danych nie są tożsame co do permutacji wierszy. %s != %s", df1_name, df2_name))
+        print("df1:")
+        print(df1)
+        print("df2:")
+        print(df2)
+        return(FALSE)
+      }
+    } 
+  else 
+    {
+      print("Ramki danych mają różne kolumny.")
+      return(FALSE)
+    }
+}
+
+compare_all_df <- function(df1, df2, df3, df4, df1name, df2name, df3name, df4name)
+{
+  if(compare_df(df1, df2, df1name, df2name) == FALSE){
+    sprintf("Nie zgadzają się %s i %s", df1name, df2name)
+    return(FALSE)
+  }
+  if(compare_df(df2, df3, df2name, df3name) == FALSE){
+    sprintf("Nie zgadzają się %s i %s", df2name, df3name)
+    return(FALSE)
+  }
+  if(compare_df(df3, df4, df3name, df4name) == FALSE){
+    sprintf("Nie zgadzają się %s i %s", df3name, df4name)
+    return(FALSE)
+  }
+  print("Tabelki danych równoważne co do permutacji!")
+  return(TRUE)
+}
+
+
+sort_df <- function(df){
+  df = as.data.frame(df)
+  df_sorted <- df[order(df[[1]], df[[2]]), ]
+  return(df_sorted)
+}
+
+```
+
+
+```{r Zadanie 1}
+
+#Intepretacja zapytania:
+# Szukamy dziesięciu najczęściej komentowanych przez użytkowników lokalizacji.
+
+
+base_q <- function()
+{
+
+  merged_data <- merge(Users, Posts, by.x = "Id", by.y = "OwnerUserId")
+  filtered_data <- merged_data[merged_data$Location != "", ]
+  
+  grouped_data <- aggregate(Id ~ Location, data = filtered_data, FUN = length)
+  names(grouped_data) <- c("Location", "Count")
+  
+  sorted_data <- grouped_data[order(grouped_data$Count, decreasing = TRUE), ]
+  result <- sorted_data[1:10, ]
+  result <- sort_df(result)
+}
+
+dplyr_q <- function()
+{
+
+    result <- Users %>%
+    inner_join(Posts, by = c("Id" = "OwnerUserId")) %>%
+    filter(Location != "") %>%
+    group_by(Location) %>%
+    summarise(Count = n()) %>%
+    arrange(desc(Count)) %>%
+    head(10)
+    result <- sort_df(result)
+}
+
+sqldf_q <- function()
+{
+  result <- sqldf("
+  SELECT Location, COUNT(*) AS Count
+  FROM (
+    SELECT Users.Id, Users.Location
+    FROM Users
+    JOIN Posts ON Users.Id = Posts.OwnerUserId
+  )
+  WHERE Location != ''
+  GROUP BY Location
+  ORDER BY Count DESC
+  LIMIT 10
+  ")
+  result <- sort_df(result)
+}
+
+data.table_q <- function()
+{
+  result <- UsersDT[PostsDT, on = .(Id = OwnerUserId)][Location != "", .(Count = .N), by = Location][order(-Count)][1:10]
+  result <- sort_df(result)
+}
+
+
+compare_times(dplyr_q, base_q, data.table_q, sqldf_q)
+compare_all_df(dplyr_q(), base_q(), data.table_q(), sqldf_q(), "dplyr_df", "base_df", "data.table_df", "sqldf_df")
+
+```
+
+
+```{r Zadanie 2}
+
+#Intepretacja zapytania:
+# Wypisz tytuły postów oraz liczbę ich odniesień które są zapytaniami. Posortuj malejąco względem liczby odniesień.
+
+base_q2 <- function()
+{
+  RelatedTab <- aggregate(Id ~ RelatedPostId, data = PostLinks, FUN = length)
+  names(RelatedTab)[names(RelatedTab) == "Id"] <- "NumLinks" 
+
+  result <- merge(RelatedTab, Posts, by.x = "RelatedPostId", by.y = "Id")
+  result <- result[result$PostTypeId == 1, ]
+  
+  result <- result[, c("Title", "NumLinks")]
+  
+  result <- result[order(-result$NumLinks), ]
+  result <- sort_df(result)
+}
+
+dplyr_q2 <- function()
+{
+  result <- PostLinks %>%
+  group_by(RelatedPostId) %>%
+  summarise(NumLinks = n()) %>%
+  select(RelatedPostId, NumLinks) %>%
+  inner_join(Posts, by = c("RelatedPostId" = "Id")) %>%
+  filter(PostTypeId==1) %>%
+  arrange(desc(NumLinks)) %>%
+  select(Title, NumLinks) 
+  
+  result <- sort_df(result)
+}
+
+sqldf_q2 <- function()
+{
+  result <- sqldf("
+  SELECT Posts.Title, RelatedTab.NumLinks
+  FROM
+  (
+    SELECT RelatedPostId AS PostId, COUNT(*) AS NumLinks
+    FROM PostLinks
+    GROUP BY RelatedPostId
+  ) AS RelatedTab
+  JOIN Posts ON RelatedTab.PostId=Posts.Id
+  WHERE Posts.PostTypeId=1
+  ORDER BY NumLinks DESC
+  ")
+  result <- sort_df(result)
+}
+
+data.table_q2 <- function()
+{
+  options(datatable.quote = "")
+  RelatedTab = PostLinksDT[, .(NumLinks = .N), by = RelatedPostId]
+  result <- unique(RelatedTab[PostsDT, on = .(RelatedPostId = Id)][PostTypeId == 1,][order(-NumLinks)][, .(Title, NumLinks)][NumLinks!=0])
+  result <- sort_df(result)
+}
+
+compare_times(dplyr_q2, base_q2, data.table_q2, sqldf_q2)
+compare_all_df(dplyr_q2(), base_q2(), data.table_q2(), sqldf_q2(), "dplyr_df", "base_df", "data.table_df", "sqldf_df")
+
+```
+
+
+```{r Zadanie 3}
+
+#Intepretacja zapytania:
+# Wypisz tytuły, liczbę komentarzy, liczbę wyśiwetleń, sumaryczny wynik, widoczną nazwę, reputację i lokalizację.
+
+base_q3 <- function()
+{
+  CmtTotScr <- aggregate(Score ~ PostId, data = Comments, FUN = sum)
+  CmtTotScr <- CmtTotScr[,c("PostId", "Score")]
+  names(CmtTotScr)[which(names(CmtTotScr) == "Score")] <- "CommentsTotalScore"
+  
+  PostsBestComments <- merge(CmtTotScr, Posts[Posts$PostTypeId == 1, ], by.x = "PostId", by.y="Id")
+  PostsBestComments <- PostsBestComments[, c("OwnerUserId", "Title", "CommentCount", "ViewCount", "CommentsTotalScore")]
+  
+  result <- merge(PostsBestComments, Users, by.x="OwnerUserId", by.y="Id")
+  
+  result <- result[order(result$CommentsTotalScore, decreasing = TRUE), ]
+  result <- result[,c("Title", "CommentCount", "ViewCount", "CommentsTotalScore", "DisplayName", "Reputation", "Location")][1:10, ]
+  result <- sort_df(result)
+}
+
+dplyr_q3 <- function()
+{
+
+  result <- Comments %>%
+  group_by(PostId) %>%
+  summarise(CommentsTotalScore = sum(Score)) %>%
+  select(PostId, CommentsTotalScore) %>%
+  inner_join(Posts, by = c("PostId" = "Id")) %>%
+  filter(PostTypeId==1) %>%
+  select(OwnerUserId, Title, CommentCount, ViewCount, CommentsTotalScore) %>%
+  inner_join(Users, by = c("OwnerUserId" = "Id")) %>%
+  arrange(desc(CommentsTotalScore)) %>%
+  select(Title, CommentCount, ViewCount, CommentsTotalScore, DisplayName, Reputation, Location) %>%
+  head(10)
+  result <- sort_df(result)
+}
+
+sqldf_q3 <- function()
+{
+  result <- sqldf("
+  SELECT Title, CommentCount, ViewCount, CommentsTotalScore,
+  DisplayName, Reputation, Location
+  FROM (
+    SELECT Posts.OwnerUserId, Posts.Title, Posts.CommentCount, Posts.ViewCount,
+    CmtTotScr.CommentsTotalScore
+    FROM (
+      SELECT PostId, SUM(Score) AS CommentsTotalScore
+      FROM Comments
+      GROUP BY PostId
+    ) AS CmtTotScr
+    
+    JOIN Posts ON Posts.Id = CmtTotScr.PostId
+    WHERE Posts.PostTypeId=1
+  ) AS PostsBestComments
+  
+  JOIN Users ON PostsBestComments.OwnerUserId = Users.Id
+  ORDER BY CommentsTotalScore DESC
+  LIMIT 10
+  ")
+  result <- sort_df(result)
+}
+
+data.table_q3 <- function()
+{
+  
+  result <- CommentsDT[, .(CommentsTotalScore = sum(Score)), by = PostId][PostsDT, on = .(PostId = Id)][PostTypeId == 1,]
+  result <- result[, c("OwnerUserId", "Title", "CommentCount", "ViewCount", "CommentsTotalScore")]
+  result <- result[Users, on = .(OwnerUserId = Id)][order(-CommentsTotalScore)][1:10]
+  result <- result[, c("Title", "CommentCount", "ViewCount", "CommentsTotalScore","DisplayName", "Reputation", "Location")]
+  result <- sort_df(result)
+}
+
+compare_times(dplyr_q3, base_q3, data.table_q3, sqldf_q3)
+compare_all_df(dplyr_q3(), base_q3(), data.table_q3(), sqldf_q3(), "dplyr_df", "base_df", "data.table_df", "sqldf_df")
+
+```
+
+
+```{r Zadanie 4}
+
+#Intepretacja zapytania:
+# Stwórz ramkę dla Użytkowników z liczbą ich zapytań oraz odpowiedzi.
+# Następnie wypisz 5 użytkowników najczęściej odpowiadających którzy najwięcej razy odpowiedzieli na zapytanie.
+
+base_q4 <- function()
+{
+  Answers <- Posts[Posts$PostTypeId == 2,]
+  Answers <- aggregate(Id ~ OwnerUserId, data = Answers, FUN =  length)
+  names(Answers)[which(names(Answers) == "Id")] <- "AnswersNumber"
+  
+  Questions <- Posts[Posts$PostTypeId == 1,]
+  Questions <- aggregate(Id ~ OwnerUserId, data = Questions, FUN =  length)
+  names(Questions)[which(names(Questions) == "Id")] <- "QuestionsNumber"
+  
+  PostCounts <- merge(Answers, Questions, by.x = "OwnerUserId", by.y = "OwnerUserId")
+  PostCounts <- PostCounts[PostCounts$AnswersNumber > PostCounts$QuestionsNumber, ]
+  PostCounts <- PostCounts[order(PostCounts$AnswersNumber,decreasing = TRUE), ]
+  PostCounts <- PostCounts[1:5,]
+  
+  result <- merge(PostCounts, Users, by.x = "OwnerUserId", by.y = "Id")
+  result = result[, c("DisplayName", "QuestionsNumber", "AnswersNumber", "Location", "Reputation", "UpVotes", "DownVotes")]
+  result <- sort_df(result)
+}
+
+dplyr_q4 <- function()
+{
+  
+  Answers <- Posts %>%
+  filter(PostTypeId==2) %>%
+  group_by(OwnerUserId) %>%
+  summarise(AnswersNumber = n()) %>%
+  select(OwnerUserId, AnswersNumber) 
+  
+  Questions <- Posts %>%
+  filter(PostTypeId==1) %>%
+  group_by(OwnerUserId) %>%
+  summarise(QuestionsNumber = n()) %>%
+  select(OwnerUserId, QuestionsNumber) 
+  
+  PostsCounts <- Answers %>%
+  inner_join(Questions, by = c("OwnerUserId" = "OwnerUserId")) %>%
+  filter(AnswersNumber > QuestionsNumber) %>%
+  arrange(desc(AnswersNumber)) 
+  
+  result <- PostsCounts %>%
+  inner_join(Users, c("OwnerUserId" = "Id")) %>%
+  select(DisplayName, QuestionsNumber, AnswersNumber, Location, Reputation, UpVotes, DownVotes) %>%
+  head(5)
+  result <- sort_df(result)
+}
+
+sqldf_q4 <- function()
+{
+  result <- sqldf("
+  SELECT DisplayName, QuestionsNumber, AnswersNumber, Location,Reputation, UpVotes, DownVotes
+  FROM (
+    SELECT *
+    FROM (
+    SELECT COUNT(*) as AnswersNumber, OwnerUserId
+    FROM Posts
+    WHERE PostTypeId = 2
+    GROUP BY OwnerUserId
+  ) AS Answers
+  JOIN
+  (
+    SELECT COUNT(*) as QuestionsNumber, OwnerUserId
+    FROM Posts
+    WHERE PostTypeId = 1
+    GROUP BY OwnerUserId
+  ) AS Questions
+    ON Answers.OwnerUserId = Questions.OwnerUserId
+    WHERE AnswersNumber > QuestionsNumber
+    ORDER BY AnswersNumber DESC
+    LIMIT 5
+  ) AS PostsCounts
+  
+  JOIN Users
+  ON PostsCounts.OwnerUserId = Users.Id
+
+  ")
+
+}
+
+data.table_q4 <- function()
+{
+  
+  Answers <- PostsDT[!is.na(OwnerUserId)][PostTypeId == 2][, .(AnswersNumber = .N), by = OwnerUserId]
+
+  Questions <- PostsDT[!is.na(OwnerUserId)][PostTypeId == 1][, .(QuestionsNumber = .N), by = OwnerUserId]
+
+  PostsCounts <- Answers[Questions, on = .(OwnerUserId = OwnerUserId)][AnswersNumber > QuestionsNumber][order(-AnswersNumber)][1:5]
+  
+  result <- UsersDT[PostsCounts, on = .(Id = OwnerUserId)][, c("DisplayName", "QuestionsNumber", "AnswersNumber", "Location", "Reputation", "UpVotes", "DownVotes")]
+  result <- sort_df(result)
+}
+
+compare_times(dplyr_q4, base_q4, data.table_q4, sqldf_q4)
+compare_all_df(dplyr_q4(), base_q4(), data.table_q4(), sqldf_q4(), "dplyr_df", "base_df", "data.table_df", "sqldf_df")
+
+```
+
+```{r Zadanie 5}
+
+#Intepretacja zapytania:
+# Zwracane są dane użytkowników, zawierające ich AccountId, DisplayName, Location 
+# oraz średnią liczbę odpowiedzi dla każdego użytkownika, posortowane malejąco 
+# według tej średniej liczby odpowiedzi, ograniczone do 10 pierwszych wyników.
+base_q5 <- function()
+{
+
+  AnsCount <- Posts[Posts$PostTypeId == 2, ]
+  AnsCount <- aggregate(Id ~ ParentId, data = AnsCount, FUN = length)
+  names(AnsCount)[which(names(AnsCount) == "Id")] <- "AnswersCount"
+
+  PostAuth <- merge(AnsCount, Posts, by.x = "ParentId", by.y = "Id")
+  names(PostAuth)[which(names(PostAuth) == "ParentId.y")] <- "Id"
+  PostAuth <- PostAuth[, c("AnswersCount", "Id",  "OwnerUserId")]
+
+  result <- aggregate(AnswersCount ~ OwnerUserId, data = PostAuth, FUN = mean)
+  result <- merge(result, Users, by.x="OwnerUserId", by.y="AccountId")
+  names(result)[which(names(result) == "AnswersCount")] <- "AverageAnswersCount"
+  result <- result[, c("Id", "DisplayName", "Location", "AverageAnswersCount")]
+  names(result)[which(names(result) == "Id")] <- "AccountId"
+ 
+  result <- result[order(result$AverageAnswersCount, decreasing = TRUE), ][1:10,]
+  result <- sort_df(result)
+}
+
+dplyr_q5 <- function()
+{
+  
+  AnsCount <- Posts %>%
+  filter(PostTypeId==2) %>%
+  group_by(ParentId) %>%
+  summarise(AnswersCount = n()) %>%
+  select(ParentId, AnswersCount)
+  
+  PostAuth <- AnsCount %>%
+  inner_join(Posts, by = c("ParentId" = "Id")) %>%
+  select(AnswersCount, ParentId.y, OwnerUserId) %>%
+  rename(Id = ParentId.y)
+
+  result <- PostAuth %>%
+  group_by(OwnerUserId) %>%
+  summarise(AverageAnswersCount = mean(AnswersCount)) %>%
+  arrange(desc(AverageAnswersCount)) %>% 
+  inner_join(Users, c("OwnerUserId" = "AccountId")) %>%
+  rename(AccountId = Id) %>%
+  select(AccountId, DisplayName, Location, AverageAnswersCount) %>%
+  head(10)
+
+  result <- sort_df(result)
+}
+
+sqldf_q5 <- function()
+{
+  result <- sqldf("
+  SELECT
+  Users.AccountId,
+  Users.DisplayName,
+  Users.Location,
+  AVG(PostAuth.AnswersCount) as AverageAnswersCount
+  FROM
+  (
+    SELECT
+    AnsCount.AnswersCount,
+    Posts.Id,
+    Posts.OwnerUserId
+    FROM (
+    SELECT Posts.ParentId, COUNT(*) AS AnswersCount
+    FROM Posts
+    WHERE Posts.PostTypeId = 2
+    GROUP BY Posts.ParentId
+  ) AS AnsCount
+    JOIN Posts ON Posts.Id = AnsCount.ParentId
+  ) AS PostAuth
+  
+  JOIN Users ON Users.AccountId=PostAuth.OwnerUserId
+  GROUP BY OwnerUserId
+  ORDER BY AverageAnswersCount DESC
+  LIMIT 10
+  ")
+  result <- sort_df(result)
+}
+
+data.table_q5 <- function()
+{
+
+  AnsCount <- PostsDT[PostTypeId == 2][, .(AnswersCount = .N), by = ParentId]
+
+  PostAuth <- PostsDT[AnsCount,on=.(Id==ParentId),.(AnswersCount, Id, OwnerUserId),nomatch = NULL]
+
+  result <- UsersDT[PostAuth[!is.na(OwnerUserId),],on=.(AccountId==OwnerUserId),nomatch = NULL]
+  result<- result[,.(DisplayName=first(DisplayName), Location=first(Location),AverageAnswersCount=mean(AnswersCount)),by=.(AccountId),nomatch = NULL]
+  
+  result <- result[, c("AccountId", "DisplayName", "Location", "AverageAnswersCount")][order(-AverageAnswersCount)][1:10]
+  result <- sort_df(result)
+}
+
+compare_times(dplyr_q5, base_q5, data.table_q5, sqldf_q5)
+compare_all_df(dplyr_q5(), base_q5(), data.table_q5(), sqldf_q5(), "dplyr_df", "base_df", "data.table_df", "sqldf_df")
+
+print(data.table_q5())
+print(sqldf_q5())
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
